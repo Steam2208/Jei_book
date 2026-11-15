@@ -1,0 +1,35 @@
+modLoader="javafml"
+loaderVersion="[4,)"
+license="MIT"
+
+[[mods]]
+modId="recipebookjei"
+version="1.0.0"
+displayName="Recipe Book JEI"
+authors="User & Antigravity"
+description="Replaces vanilla recipe book craft placement with JEI recipe lookup, shows creative tabs, and hides default JEI overlay."
+
+[[dependencies.recipebookjei]]
+    modId="neoforge"
+    type="REQUIRED"
+    versionRange="[21.1,)"
+    ordering="NONE"
+    side="CLIENT"
+
+[[dependencies.recipebookjei]]
+    modId="minecraft"
+    type="REQUIRED"
+    versionRange="[1.21.1,1.22)"
+    ordering="NONE"
+    side="CLIENT"
+
+[[dependencies.recipebookjei]]
+    modId="jei"
+    type="REQUIRED"
+    versionRange="[19.0,)"
+    ordering="AFTER"
+    side="CLIENT"
+
+[[mixins]]
+    config="recipebookjei.mixins.json"
+

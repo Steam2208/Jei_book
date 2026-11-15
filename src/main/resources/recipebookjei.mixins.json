@@ -1,0 +1,17 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.recipebookjei.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "client": [
+    "RecipeButtonMixin",
+    "RecipeBookPageMixin",
+    "RecipeBookTabButtonMixin",
+    "RecipeBookComponentMixin",
+    "JeiToggleStateMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 0
+  }
+}
+
