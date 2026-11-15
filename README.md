@@ -60,3 +60,4 @@ A client-side mod for Minecraft 1.21.1 (NeoForge) that integrates the vanilla Re
   * Mod namespace search support (@mod, e.g. @create or @create gear).
   * Automatically hides empty tabs that contain no matching items during search.
   * Right-click on the search bar or magnifying glass to clear search instantly.
+
