@@ -13,6 +13,7 @@ import net.minecraft.world.item.Items;
 
 import java.util.List;
 import java.util.Locale;
+import java.util.function.Predicate;
 
 public class CreativeTabBookButton extends RecipeBookTabButton {
     private final CreativeModeTab creativeTab;
@@ -76,6 +77,10 @@ public class CreativeTabBookButton extends RecipeBookTabButton {
     }
 
     public boolean hasMatchingItems(String modFilter, String itemFilter) {
+        return hasMatchingItems(modFilter, itemFilter, null);
+    }
+
+    public boolean hasMatchingItems(String modFilter, String itemFilter, Predicate<ItemStack> extraFilter) {
         if (this.isSearch()) {
             return true; // Search tab always visible
         }
@@ -83,7 +88,7 @@ public class CreativeTabBookButton extends RecipeBookTabButton {
         if (this.isBookmarks()) {
             List<ItemStack> bookmarks = RecipeBookJeiPlugin.getBookmarkedItems();
             for (ItemStack stack : bookmarks) {
-                if (matchesStack(stack, modFilter, itemFilter)) {
+                if (matchesStack(stack, modFilter, itemFilter) && (extraFilter == null || extraFilter.test(stack))) {
                     return true;
                 }
             }
@@ -92,8 +97,8 @@ public class CreativeTabBookButton extends RecipeBookTabButton {
 
         if (this.creativeTab == null) return false;
 
-        // If searching @mod without item query, check tab registry namespace / title first
-        if (!modFilter.isEmpty() && itemFilter.isEmpty()) {
+        // If searching @mod without item query (and no craftability filter), check tab registry namespace / title first
+        if (extraFilter == null && !modFilter.isEmpty() && itemFilter.isEmpty()) {
             ResourceLocation key = BuiltInRegistries.CREATIVE_MODE_TAB.getKey(this.creativeTab);
             if (key != null) {
                 if (key.getNamespace().toLowerCase(Locale.ROOT).contains(modFilter) ||
@@ -110,7 +115,7 @@ public class CreativeTabBookButton extends RecipeBookTabButton {
         // Check if any item in the tab matches
         try {
             for (ItemStack stack : this.creativeTab.getDisplayItems()) {
-                if (matchesStack(stack, modFilter, itemFilter)) {
+                if (matchesStack(stack, modFilter, itemFilter) && (extraFilter == null || extraFilter.test(stack))) {
                     return true;
                 }
             }

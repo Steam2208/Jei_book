@@ -4,7 +4,7 @@ license="MIT"
 
 [[mods]]
 modId="recipebookjei"
-version="1.0.0"
+version="1.1.0"
 displayName="Recipe Book JEI"
 authors="Steam2208"
 description="Replaces vanilla recipe book craft placement with JEI recipe lookup, shows creative tabs, dynamic mod filtering, bookmarks, and hides default JEI overlay."

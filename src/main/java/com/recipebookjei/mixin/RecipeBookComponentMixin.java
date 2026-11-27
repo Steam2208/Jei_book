@@ -5,36 +5,59 @@ import com.recipebookjei.gui.ICustomRecipeBookComponent;
 import com.recipebookjei.gui.ICustomRecipeBookPage;
 import com.recipebookjei.gui.ICustomRecipeButton;
 import com.recipebookjei.jei.RecipeBookJeiPlugin;
+import it.unimi.dsi.fastutil.ints.IntList;
+import net.minecraft.client.ClientRecipeBook;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.components.StateSwitchingButton;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.gui.screens.recipebook.GhostRecipe;
 import net.minecraft.client.gui.screens.recipebook.RecipeBookComponent;
 import net.minecraft.client.gui.screens.recipebook.RecipeBookPage;
 import net.minecraft.client.gui.screens.recipebook.RecipeBookTabButton;
 import net.minecraft.client.gui.screens.recipebook.RecipeButton;
+import net.minecraft.client.gui.screens.recipebook.RecipeCollection;
 import net.minecraft.client.resources.sounds.SimpleSoundInstance;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.recipebook.PlaceRecipe;
 import net.minecraft.sounds.SoundEvents;
+import net.minecraft.stats.RecipeBook;
+import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.entity.player.StackedContents;
+import net.minecraft.world.inventory.ClickType;
+import net.minecraft.world.inventory.RecipeBookMenu;
+import net.minecraft.world.inventory.RecipeBookType;
+import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.item.CreativeModeTab;
 import net.minecraft.world.item.CreativeModeTabs;
+import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.ItemStackLinkedSet;
+import net.minecraft.world.item.crafting.Ingredient;
+import net.minecraft.world.item.crafting.Recipe;
+import net.minecraft.world.item.crafting.RecipeHolder;
+import net.minecraft.world.item.crafting.RecipeType;
 import org.lwjgl.glfw.GLFW;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
+import org.spongepowered.asm.mixin.gen.Invoker;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 import java.util.ArrayList;
-import java.util.HashSet;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
+import java.util.function.Predicate;
 
 @Mixin(RecipeBookComponent.class)
 public abstract class RecipeBookComponentMixin implements ICustomRecipeBookComponent {
@@ -47,12 +70,30 @@ public abstract class RecipeBookComponentMixin implements ICustomRecipeBookCompo
     @Shadow @Final private RecipeBookPage recipeBookPage;
     @Shadow private EditBox searchBox;
     @Shadow protected Minecraft minecraft;
+    @Shadow protected RecipeBookMenu<?, ?> menu;
+    @Shadow private ClientRecipeBook book;
+    @Shadow @Final private StackedContents stackedContents;
+    @Shadow @Final protected GhostRecipe ghostRecipe;
     @Shadow public abstract boolean isVisible();
+    @Shadow protected abstract void setVisible(boolean visible);
+    @Shadow protected abstract void sendUpdateSettings();
+    @Shadow public abstract void setupGhostRecipe(RecipeHolder<?> recipe, List<Slot> slots);
+
+    @Invoker("toggleFiltering")
+    protected abstract boolean recipebookjei$toggleFiltering();
+
+    @Invoker("updateFilterButtonTooltip")
+    protected abstract void recipebookjei$updateFilterButtonTooltip();
+
+    @Invoker("isOffsetNextToMainGUI")
+    protected abstract boolean recipebookjei$isOffsetNextToMainGUI();
 
     @Unique
     private final List<CreativeTabBookButton> recipebookjei$allTabs = new ArrayList<>();
     @Unique
     private final List<CreativeTabBookButton> recipebookjei$filteredTabs = new ArrayList<>();
+    @Unique
+    private final Map<Item, List<ItemStack>> recipebookjei$craftableResultsByItem = new HashMap<>();
     @Unique
     private int recipebookjei$tabScrollOffset = 0;
     @Unique
@@ -60,10 +101,20 @@ public abstract class RecipeBookComponentMixin implements ICustomRecipeBookCompo
     @Unique
     private static final int VISIBLE_TABS_COUNT = 6;
 
+    @Unique
+    private static final RecipeBook RECIPEBOOKJEI$ALWAYS_KNOWN_BOOK = new RecipeBook() {
+        @Override
+        public boolean contains(RecipeHolder<?> recipe) {
+            return recipe != null;
+        }
+    };
+
     @Inject(method = "initVisuals", at = @At("TAIL"))
     private void onInitVisuals(CallbackInfo ci) {
         if (this.filterButton != null) {
-            this.filterButton.visible = false;
+            this.filterButton.visible = true;
+            this.filterButton.setStateTriggered(recipebookjei$isFilteringCraftable());
+            this.recipebookjei$updateFilterButtonTooltip();
         }
 
         if (this.minecraft.level != null) {
@@ -107,6 +158,7 @@ public abstract class RecipeBookComponentMixin implements ICustomRecipeBookCompo
             }
         }
 
+        recipebookjei$refreshCraftableCache();
         recipebookjei$updateFilteredTabs();
 
         // Restore selected tab or default to first
@@ -142,6 +194,7 @@ public abstract class RecipeBookComponentMixin implements ICustomRecipeBookCompo
     @Inject(method = "updateTabs", at = @At("HEAD"), cancellable = true)
     private void onUpdateTabs(CallbackInfo ci) {
         ci.cancel();
+        recipebookjei$refreshCraftableCache();
         recipebookjei$updateFilteredTabs();
         recipebookjei$refreshVisibleTabs();
     }
@@ -149,9 +202,442 @@ public abstract class RecipeBookComponentMixin implements ICustomRecipeBookCompo
     @Inject(method = "updateCollections", at = @At("HEAD"), cancellable = true)
     private void onUpdateCollections(boolean resetPage, CallbackInfo ci) {
         ci.cancel();
+        recipebookjei$refreshCraftableCache();
         recipebookjei$updateFilteredTabs();
         recipebookjei$refreshVisibleTabs();
         recipebookjei$updateDisplayItems(resetPage);
+    }
+
+    @Unique
+    private boolean recipebookjei$isFilteringCraftable() {
+        return this.book != null && this.menu != null && this.book.isFiltering(this.menu);
+    }
+
+    @Unique
+    private void recipebookjei$refreshStackedContents() {
+        if (this.minecraft != null && this.minecraft.player != null && this.menu != null) {
+            this.stackedContents.clear();
+            this.minecraft.player.getInventory().fillStackedContents(this.stackedContents);
+            this.menu.fillCraftSlotsStackedContents(this.stackedContents);
+        }
+    }
+
+    @Unique
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private void recipebookjei$refreshCraftableCache() {
+        this.recipebookjei$craftableResultsByItem.clear();
+        if (!recipebookjei$isFilteringCraftable()) {
+            return;
+        }
+        if (this.minecraft == null || this.minecraft.level == null || this.menu == null) {
+            return;
+        }
+
+        recipebookjei$refreshStackedContents();
+
+        RecipeType<?> targetType = recipebookjei$getVanillaRecipeType(this.menu.getRecipeBookType());
+        if (targetType == null) {
+            return;
+        }
+
+        int gridW = this.menu.getGridWidth();
+        int gridH = this.menu.getGridHeight();
+        var registryAccess = this.minecraft.level.registryAccess();
+
+        List<RecipeHolder<?>> holders = (List<RecipeHolder<?>>) (List<?>) this.minecraft.level.getRecipeManager().getAllRecipesFor((RecipeType) targetType);
+        for (RecipeHolder<?> holder : holders) {
+            Recipe<?> recipe = holder.value();
+            if (recipe.isSpecial() || recipe.getIngredients().isEmpty()) {
+                continue;
+            }
+            if (!recipe.canCraftInDimensions(gridW, gridH)) {
+                continue;
+            }
+            if (!recipebookjei$quickHasIngredients(recipe)) {
+                continue;
+            }
+            if (this.stackedContents.canCraft(recipe, null)) {
+                ItemStack result = recipe.getResultItem(registryAccess);
+                if (!result.isEmpty()) {
+                    this.recipebookjei$craftableResultsByItem
+                        .computeIfAbsent(result.getItem(), k -> new ArrayList<>())
+                        .add(result);
+                }
+            }
+        }
+    }
+
+    @Unique
+    private boolean recipebookjei$quickHasIngredients(Recipe<?> recipe) {
+        for (Ingredient ingredient : recipe.getIngredients()) {
+            if (!ingredient.isEmpty()) {
+                IntList ids = ingredient.getStackingIds();
+                boolean hasAny = false;
+                for (int i = 0; i < ids.size(); i++) {
+                    if (this.stackedContents.contents.get(ids.getInt(i)) > 0) {
+                        hasAny = true;
+                        break;
+                    }
+                }
+                if (!hasAny) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    @Unique
+    private boolean recipebookjei$isItemCraftable(ItemStack stack) {
+        if (stack == null || stack.isEmpty()) return false;
+        List<ItemStack> candidates = this.recipebookjei$craftableResultsByItem.get(stack.getItem());
+        if (candidates == null) return false;
+        for (ItemStack res : candidates) {
+            if (ItemStack.isSameItemSameComponents(res, stack)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    @Unique
+    private static RecipeType<?> recipebookjei$getVanillaRecipeType(RecipeBookType bookType) {
+        if (bookType == null) return null;
+        return switch (bookType) {
+            case CRAFTING -> RecipeType.CRAFTING;
+            case FURNACE -> RecipeType.SMELTING;
+            case BLAST_FURNACE -> RecipeType.BLASTING;
+            case SMOKER -> RecipeType.SMOKING;
+        };
+    }
+
+    @Unique
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private List<RecipeHolder<?>> recipebookjei$findRecipesForItem(ItemStack stack) {
+        List<RecipeHolder<?>> result = new ArrayList<>();
+        if (stack == null || stack.isEmpty() || this.minecraft == null || this.minecraft.level == null || this.menu == null) {
+            return result;
+        }
+
+        RecipeType<?> targetType = recipebookjei$getVanillaRecipeType(this.menu.getRecipeBookType());
+        if (targetType == null) {
+            return result;
+        }
+
+        int gridW = this.menu.getGridWidth();
+        int gridH = this.menu.getGridHeight();
+        var registryAccess = this.minecraft.level.registryAccess();
+
+        List<RecipeHolder<?>> holders = (List<RecipeHolder<?>>) (List<?>) this.minecraft.level.getRecipeManager().getAllRecipesFor((RecipeType) targetType);
+        for (RecipeHolder<?> holder : holders) {
+            Recipe<?> recipe = holder.value();
+            if (recipe.isSpecial() || recipe.getIngredients().isEmpty()) {
+                continue;
+            }
+            if (!recipe.canCraftInDimensions(gridW, gridH)) {
+                continue;
+            }
+            ItemStack out = recipe.getResultItem(registryAccess);
+            if (!out.isEmpty() && ItemStack.isSameItemSameComponents(out, stack)) {
+                result.add(holder);
+            }
+        }
+        return result;
+    }
+
+    @Unique
+    private void recipebookjei$placeItemRecipe(ItemStack stack, boolean maxTransfer) {
+        if (this.minecraft == null || this.minecraft.player == null || this.minecraft.player.isSpectator() || this.menu == null) {
+            return;
+        }
+
+        this.ghostRecipe.clear();
+
+        RecipeBookJeiPlugin.TransferResult jeiResult = RecipeBookJeiPlugin.tryTransferRecipeForItem(stack, this.menu, this.minecraft.player, maxTransfer);
+        if (jeiResult == RecipeBookJeiPlugin.TransferResult.TRANSFERRED) {
+            if (!this.recipebookjei$isOffsetNextToMainGUI()) {
+                this.setVisible(false);
+            }
+            return;
+        }
+
+        List<RecipeHolder<?>> candidates = recipebookjei$findRecipesForItem(stack);
+        if (candidates.isEmpty()) {
+            return;
+        }
+
+        recipebookjei$refreshStackedContents();
+
+        RecipeHolder<?> bestCraftableUnlocked = null;
+        RecipeHolder<?> bestCraftableAny = null;
+        for (RecipeHolder<?> holder : candidates) {
+            if (recipebookjei$quickHasIngredients(holder.value()) && this.stackedContents.canCraft(holder.value(), null)) {
+                if (this.book != null && this.book.contains(holder)) {
+                    bestCraftableUnlocked = holder;
+                    break;
+                } else if (bestCraftableAny == null) {
+                    bestCraftableAny = holder;
+                }
+            }
+        }
+
+        RecipeHolder<?> craftable = (bestCraftableUnlocked != null) ? bestCraftableUnlocked : bestCraftableAny;
+        if (craftable != null && jeiResult != RecipeBookJeiPlugin.TransferResult.USER_ERROR) {
+            boolean placed = false;
+            if (this.book != null && this.book.contains(craftable) && this.minecraft.gameMode != null) {
+                this.minecraft.gameMode.handlePlaceRecipe(this.menu.containerId, craftable, maxTransfer);
+                placed = true;
+            }
+            if (!placed && jeiResult == RecipeBookJeiPlugin.TransferResult.NO_SERVER) {
+                recipebookjei$clientPlaceRecipe(craftable, maxTransfer);
+                placed = true;
+            }
+            if (!placed) {
+                this.setupGhostRecipe(craftable, this.menu.slots);
+            }
+        } else {
+            this.setupGhostRecipe(candidates.get(0), this.menu.slots);
+        }
+
+        if (!this.recipebookjei$isOffsetNextToMainGUI()) {
+            this.setVisible(false);
+        }
+    }
+
+    @Unique
+    private void recipebookjei$placeRecipeHolder(RecipeHolder<?> holder, boolean maxTransfer) {
+        if (holder == null || this.minecraft == null || this.minecraft.player == null || this.minecraft.player.isSpectator() || this.menu == null) {
+            return;
+        }
+
+        this.ghostRecipe.clear();
+
+        RecipeBookJeiPlugin.TransferResult jeiResult = RecipeBookJeiPlugin.tryTransferRecipeHolder(holder, this.menu, this.minecraft.player, maxTransfer);
+        if (jeiResult == RecipeBookJeiPlugin.TransferResult.TRANSFERRED) {
+            if (!this.recipebookjei$isOffsetNextToMainGUI()) {
+                this.setVisible(false);
+            }
+            return;
+        }
+
+        recipebookjei$refreshStackedContents();
+        boolean canCraft = recipebookjei$quickHasIngredients(holder.value()) && this.stackedContents.canCraft(holder.value(), null);
+        if (canCraft && jeiResult != RecipeBookJeiPlugin.TransferResult.USER_ERROR) {
+            boolean placed = false;
+            if (this.book != null && this.book.contains(holder) && this.minecraft.gameMode != null) {
+                this.minecraft.gameMode.handlePlaceRecipe(this.menu.containerId, holder, maxTransfer);
+                placed = true;
+            }
+            if (!placed && jeiResult == RecipeBookJeiPlugin.TransferResult.NO_SERVER) {
+                recipebookjei$clientPlaceRecipe(holder, maxTransfer);
+                placed = true;
+            }
+            if (!placed) {
+                this.setupGhostRecipe(holder, this.menu.slots);
+            }
+        } else {
+            this.setupGhostRecipe(holder, this.menu.slots);
+        }
+
+        if (!this.recipebookjei$isOffsetNextToMainGUI()) {
+            this.setVisible(false);
+        }
+    }
+
+    @Unique
+    private boolean recipebookjei$clientPlaceRecipe(RecipeHolder<?> holder, boolean maxTransfer) {
+        if (this.minecraft == null || this.minecraft.player == null || this.minecraft.gameMode == null || this.menu == null) {
+            return false;
+        }
+        if (!this.menu.getCarried().isEmpty()) {
+            return false;
+        }
+
+        int resultSlot = this.menu.getResultSlotIndex();
+        int gridW = this.menu.getGridWidth();
+        int gridH = this.menu.getGridHeight();
+
+        Map<Integer, Ingredient> slotIngredients = new LinkedHashMap<>();
+        PlaceRecipe<Ingredient> placer = (ingredient, slotIndex, maxAmount, gridX, gridY) -> {
+            if (!ingredient.isEmpty() && slotIndex != resultSlot) {
+                slotIngredients.put(slotIndex, ingredient);
+            }
+        };
+        placer.placeRecipe(gridW, gridH, resultSlot, holder, holder.value().getIngredients().iterator(), 0);
+
+        if (slotIngredients.isEmpty()) {
+            return false;
+        }
+
+        int setsToPlace = 1;
+        if (maxTransfer) {
+            recipebookjei$refreshStackedContents();
+            int maxCraftable = this.stackedContents.getBiggestCraftableStack(holder, null);
+            if (maxCraftable > 1) {
+                int cap = maxCraftable;
+                for (Ingredient ing : slotIngredients.values()) {
+                    int ingCap = 1;
+                    for (Slot s : this.menu.slots) {
+                        if (s.container instanceof Inventory && s.hasItem() && ing.test(s.getItem())) {
+                            ingCap = Math.max(ingCap, s.getItem().getMaxStackSize());
+                        }
+                    }
+                    cap = Math.min(cap, ingCap);
+                }
+                setsToPlace = Math.max(1, cap);
+            }
+        }
+
+        // Only return crafting grid slots that do not match the target recipe or exceed setsToPlace
+        for (int i = 0; i < this.menu.getSize(); i++) {
+            if (i != resultSlot && this.menu.shouldMoveToInventory(i)) {
+                Slot slot = this.menu.getSlot(i);
+                if (slot.hasItem()) {
+                    ItemStack cur = slot.getItem();
+                    Ingredient wanted = slotIngredients.get(i);
+                    if (wanted != null && wanted.test(cur) && cur.getCount() <= setsToPlace) {
+                        continue;
+                    }
+                    this.minecraft.gameMode.handleInventoryMouseClick(this.menu.containerId, slot.index, 0, ClickType.QUICK_MOVE, this.minecraft.player);
+                    if (slot.hasItem()) {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        Map<Integer, Integer> remainingNeeds = new LinkedHashMap<>();
+        for (Map.Entry<Integer, Ingredient> entry : slotIngredients.entrySet()) {
+            int slotIdx = entry.getKey();
+            Slot slotObj = this.menu.getSlot(slotIdx);
+            int curCount = slotObj.hasItem() ? slotObj.getItem().getCount() : 0;
+            int need = setsToPlace - curCount;
+            if (need > 0) {
+                remainingNeeds.put(slotIdx, need);
+            }
+        }
+
+        if (remainingNeeds.isEmpty()) {
+            return true;
+        }
+
+        int safety = 0;
+        while (!remainingNeeds.isEmpty() && safety++ < 64) {
+            Map.Entry<Integer, Integer> first = remainingNeeds.entrySet().iterator().next();
+            int firstSlotIdx = first.getKey();
+            Ingredient firstIng = slotIngredients.get(firstSlotIdx);
+            ItemStack existingInFirst = this.menu.getSlot(firstSlotIdx).getItem();
+
+            Slot srcSlot = null;
+            for (Slot s : this.menu.slots) {
+                if (s.container instanceof Inventory && s.hasItem() && s.allowModification(this.minecraft.player) && firstIng.test(s.getItem())) {
+                    if (existingInFirst.isEmpty() || ItemStack.isSameItemSameComponents(existingInFirst, s.getItem())) {
+                        srcSlot = s;
+                        break;
+                    }
+                }
+            }
+            if (srcSlot == null) {
+                break;
+            }
+
+            ItemStack srcProto = srcSlot.getItem().copy();
+            int available = srcProto.getCount();
+
+            List<Integer> matchingTargets = new ArrayList<>();
+            for (Map.Entry<Integer, Integer> entry : remainingNeeds.entrySet()) {
+                int ts = entry.getKey();
+                Slot targetSlotObj = this.menu.getSlot(ts);
+                ItemStack existing = targetSlotObj.getItem();
+                if (slotIngredients.get(ts).test(srcProto)
+                    && (existing.isEmpty() || ItemStack.isSameItemSameComponents(existing, srcProto))
+                    && targetSlotObj.getMaxStackSize(srcProto) > existing.getCount()) {
+                    matchingTargets.add(ts);
+                }
+            }
+
+            if (matchingTargets.isEmpty()) {
+                break;
+            }
+
+            // Single slot exact half-split shortcut
+            if (matchingTargets.size() == 1) {
+                int ts = matchingTargets.get(0);
+                int need = remainingNeeds.get(ts);
+                int half = (available + 1) / 2;
+                if (available > need && half > 1 && half <= need) {
+                    this.minecraft.gameMode.handleInventoryMouseClick(this.menu.containerId, srcSlot.index, 1, ClickType.PICKUP, this.minecraft.player);
+                    this.minecraft.gameMode.handleInventoryMouseClick(this.menu.containerId, ts, 0, ClickType.PICKUP, this.minecraft.player);
+                    int rem = need - half;
+                    if (rem <= 0) {
+                        remainingNeeds.remove(ts);
+                    } else {
+                        remainingNeeds.put(ts, rem);
+                    }
+                    continue;
+                }
+            }
+
+            // Keep stack on cursor while filling matching targets, return remainder once
+            this.minecraft.gameMode.handleInventoryMouseClick(this.menu.containerId, srcSlot.index, 0, ClickType.PICKUP, this.minecraft.player);
+            for (int ts : matchingTargets) {
+                int carriedCount = this.menu.getCarried().getCount();
+                if (carriedCount <= 0) {
+                    break;
+                }
+                int need = remainingNeeds.get(ts);
+                int take = Math.min(need, carriedCount);
+                if (take == carriedCount) {
+                    this.minecraft.gameMode.handleInventoryMouseClick(this.menu.containerId, ts, 0, ClickType.PICKUP, this.minecraft.player);
+                    int rem = need - take;
+                    if (rem <= 0) {
+                        remainingNeeds.remove(ts);
+                    } else {
+                        remainingNeeds.put(ts, rem);
+                    }
+                    break;
+                } else {
+                    for (int c = 0; c < take; c++) {
+                        this.minecraft.gameMode.handleInventoryMouseClick(this.menu.containerId, ts, 1, ClickType.PICKUP, this.minecraft.player);
+                    }
+                    int rem = need - take;
+                    if (rem <= 0) {
+                        remainingNeeds.remove(ts);
+                    } else {
+                        remainingNeeds.put(ts, rem);
+                    }
+                }
+            }
+            if (!this.menu.getCarried().isEmpty()) {
+                this.minecraft.gameMode.handleInventoryMouseClick(this.menu.containerId, srcSlot.index, 0, ClickType.PICKUP, this.minecraft.player);
+                if (!this.menu.getCarried().isEmpty()) {
+                    break;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    @Unique
+    private void recipebookjei$tryOpenVariantOverlay(ItemStack stack, RecipeButton widget, int bookX, int bookY) {
+        if (this.minecraft == null || this.minecraft.level == null || this.menu == null) {
+            return;
+        }
+        List<RecipeHolder<?>> holders = recipebookjei$findRecipesForItem(stack);
+        if (holders.size() <= 1) {
+            return;
+        }
+
+        recipebookjei$refreshStackedContents();
+        RecipeCollection collection = new RecipeCollection(this.minecraft.level.registryAccess(), holders);
+        collection.canCraft(this.stackedContents, this.menu.getGridWidth(), this.menu.getGridHeight(), RECIPEBOOKJEI$ALWAYS_KNOWN_BOOK);
+        boolean filtering = recipebookjei$isFilteringCraftable();
+        if (filtering && collection.getDisplayRecipes(true).size() <= 1) {
+            return;
+        }
+
+        ((ICustomRecipeBookPage) this.recipeBookPage).recipebookjei$openOverlay(collection, widget, bookX, bookY);
     }
 
     @Unique
@@ -172,12 +658,15 @@ public abstract class RecipeBookComponentMixin implements ICustomRecipeBookCompo
             }
         }
 
+        boolean onlyCraftable = recipebookjei$isFilteringCraftable();
+        Predicate<ItemStack> craftFilter = onlyCraftable ? this::recipebookjei$isItemCraftable : null;
+
         this.recipebookjei$filteredTabs.clear();
-        if (search.isEmpty()) {
+        if (search.isEmpty() && !onlyCraftable) {
             this.recipebookjei$filteredTabs.addAll(this.recipebookjei$allTabs);
         } else {
             for (CreativeTabBookButton tab : this.recipebookjei$allTabs) {
-                if (tab.hasMatchingItems(modFilter, itemFilter)) {
+                if (tab.hasMatchingItems(modFilter, itemFilter, craftFilter)) {
                     this.recipebookjei$filteredTabs.add(tab);
                 }
             }
@@ -247,40 +736,36 @@ public abstract class RecipeBookComponentMixin implements ICustomRecipeBookCompo
         }
 
         String search = (this.searchBox != null) ? this.searchBox.getValue().trim().toLowerCase(Locale.ROOT) : "";
+        String modQuery = "";
+        String itemQuery = search;
+        if (!search.isEmpty() && search.startsWith("@")) {
+            String afterAt = search.substring(1).trim();
+            int spaceIdx = afterAt.indexOf(' ');
+            if (spaceIdx != -1) {
+                modQuery = afterAt.substring(0, spaceIdx).trim();
+                itemQuery = afterAt.substring(spaceIdx + 1).trim();
+            } else {
+                modQuery = afterAt;
+                itemQuery = "";
+            }
+        }
+
+        boolean onlyCraftable = recipebookjei$isFilteringCraftable();
+        Set<ItemStack> seen = cTab.isSearch() ? ItemStackLinkedSet.createTypeAndComponentsSet() : null;
         List<ItemStack> filtered = new ArrayList<>();
 
-        if (search.isEmpty()) {
-            for (ItemStack stack : rawItems) {
-                if (stack != null && !stack.isEmpty()) {
-                    filtered.add(stack);
-                }
+        for (ItemStack stack : rawItems) {
+            if (stack == null || stack.isEmpty()) continue;
+            if (!search.isEmpty() && !CreativeTabBookButton.matchesStack(stack, modQuery, itemQuery)) {
+                continue;
             }
-        } else {
-            String modQuery = "";
-            String itemQuery = search;
-            if (search.startsWith("@")) {
-                String afterAt = search.substring(1).trim();
-                int spaceIdx = afterAt.indexOf(' ');
-                if (spaceIdx != -1) {
-                    modQuery = afterAt.substring(0, spaceIdx).trim();
-                    itemQuery = afterAt.substring(spaceIdx + 1).trim();
-                } else {
-                    modQuery = afterAt;
-                    itemQuery = "";
-                }
+            if (onlyCraftable && !recipebookjei$isItemCraftable(stack)) {
+                continue;
             }
-
-            Set<String> seen = new HashSet<>();
-            for (ItemStack stack : rawItems) {
-                if (stack == null || stack.isEmpty()) continue;
-                if (CreativeTabBookButton.matchesStack(stack, modQuery, itemQuery)) {
-                    if (cTab.isSearch()) {
-                        String key = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
-                        if (!seen.add(key)) continue;
-                    }
-                    filtered.add(stack);
-                }
+            if (seen != null && !seen.add(stack)) {
+                continue;
             }
+            filtered.add(stack);
         }
 
         ((ICustomRecipeBookPage) this.recipeBookPage).recipebookjei$setCustomItems(filtered, resetPage);
@@ -339,6 +824,19 @@ public abstract class RecipeBookComponentMixin implements ICustomRecipeBookCompo
             }
         }
 
+        if (this.filterButton != null && this.filterButton.visible && this.filterButton.mouseClicked(mouseX, mouseY, button)) {
+            boolean filtering = this.recipebookjei$toggleFiltering();
+            this.filterButton.setStateTriggered(filtering);
+            this.recipebookjei$updateFilterButtonTooltip();
+            this.sendUpdateSettings();
+            recipebookjei$refreshCraftableCache();
+            recipebookjei$updateFilteredTabs();
+            recipebookjei$refreshVisibleTabs();
+            recipebookjei$updateDisplayItems(true);
+            cir.setReturnValue(true);
+            return;
+        }
+
         for (RecipeBookTabButton tab : this.tabButtons) {
             if (tab.mouseClicked(mouseX, mouseY, button)) {
                 if (this.selectedTab != tab) {
@@ -359,7 +857,7 @@ public abstract class RecipeBookComponentMixin implements ICustomRecipeBookCompo
 
         if (this.searchBox != null) {
             boolean overSearch = mouseX >= this.searchBox.getX() - 16 &&
-                                 mouseX < this.searchBox.getX() + this.searchBox.getWidth() + 10 &&
+                                 mouseX < this.searchBox.getX() + this.searchBox.getWidth() + 2 &&
                                  mouseY >= this.searchBox.getY() - 2 &&
                                  mouseY < this.searchBox.getY() + this.searchBox.getHeight() + 2;
 
@@ -387,6 +885,22 @@ public abstract class RecipeBookComponentMixin implements ICustomRecipeBookCompo
         }
 
         if (this.recipeBookPage.mouseClicked(mouseX, mouseY, button, bookX, bookY, 147, 166)) {
+            RecipeHolder<?> overlayRecipe = this.recipeBookPage.getLastClickedRecipe();
+            if (overlayRecipe != null) {
+                recipebookjei$placeRecipeHolder(overlayRecipe, Screen.hasShiftDown());
+            } else {
+                ICustomRecipeBookPage customPage = (ICustomRecipeBookPage) this.recipeBookPage;
+                ItemStack clickedItem = customPage.recipebookjei$getLastClickedItem();
+                int clickedBtn = customPage.recipebookjei$getLastClickedMouseButton();
+                RecipeButton widget = customPage.recipebookjei$getLastClickedButtonWidget();
+                if (clickedItem != null && !clickedItem.isEmpty()) {
+                    if (clickedBtn == 0) {
+                        recipebookjei$placeItemRecipe(clickedItem, Screen.hasShiftDown());
+                    } else if (clickedBtn == 1 && widget != null) {
+                        recipebookjei$tryOpenVariantOverlay(clickedItem, widget, bookX, bookY);
+                    }
+                }
+            }
             cir.setReturnValue(true);
             return;
         }
@@ -456,29 +970,40 @@ public abstract class RecipeBookComponentMixin implements ICustomRecipeBookCompo
                 recipebookjei$updateDisplayItems(true);
                 cir.setReturnValue(true);
                 return;
+            } else if (this.searchBox.isVisible() && keyCode != GLFW.GLFW_KEY_ESCAPE) {
+                cir.setReturnValue(true);
+                return;
             }
         }
 
         RecipeButton hovered = null;
         for (RecipeButton btn : ((ICustomRecipeBookPage) this.recipeBookPage).recipebookjei$getButtons()) {
-            if (btn.isHoveredOrFocused()) {
+            if (btn.visible && btn.isHovered()) {
                 hovered = btn;
                 break;
+            }
+        }
+        if (hovered == null) {
+            for (RecipeButton btn : ((ICustomRecipeBookPage) this.recipeBookPage).recipebookjei$getButtons()) {
+                if (btn.visible && btn.isFocused()) {
+                    hovered = btn;
+                    break;
+                }
             }
         }
 
         if (hovered != null) {
             ItemStack stack = ((ICustomRecipeButton) hovered).recipebookjei$getItem();
             if (stack != null && !stack.isEmpty()) {
-                if (keyCode == GLFW.GLFW_KEY_R) {
+                if (RecipeBookJeiPlugin.isShowRecipeKey(keyCode, scanCode)) {
                     RecipeBookJeiPlugin.showRecipes(stack);
                     cir.setReturnValue(true);
                     return;
-                } else if (keyCode == GLFW.GLFW_KEY_U) {
+                } else if (RecipeBookJeiPlugin.isShowUsesKey(keyCode, scanCode)) {
                     RecipeBookJeiPlugin.showUses(stack);
                     cir.setReturnValue(true);
                     return;
-                } else if (keyCode == GLFW.GLFW_KEY_A) {
+                } else if (RecipeBookJeiPlugin.isBookmarkKey(keyCode, scanCode)) {
                     boolean added = RecipeBookJeiPlugin.toggleBookmark(stack);
                     float pitch = added ? 1.5F : 0.8F;
                     this.minecraft.getSoundManager().play(SimpleSoundInstance.forUI(SoundEvents.UI_BUTTON_CLICK, pitch));

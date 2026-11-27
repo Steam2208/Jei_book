@@ -8,10 +8,14 @@
 
 ## Возможности
 
-* Просмотр рецептов в JEI:
-  * ЛКМ по предмету — просмотр рецептов крафта (если предмет не крафтится, автоматически открывается его применение).
-  * ПКМ по предмету — просмотр применения (Uses) в JEI.
-  * Горячие клавиши при наведении на предмет: R (рецепты), U (применение), A (закладки).
+* Крафт и просмотр рецептов в JEI:
+  * ЛКМ по предмету — выложить рецепт на верстаке / сетке крафта (с Shift — максимальный стак; при нехватке ресурсов показывается призрачный рецепт).
+  * ПКМ по предмету — выбор альтернативного рецепта, если их несколько.
+  * Горячие клавиши JEI при наведении на предмет: R (рецепты, по умолчанию), U (применение, по умолчанию), A (закладки) — с поддержкой переназначения в настройках управления JEI.
+
+* Фильтр доступных рецептов:
+  * Кнопка-галочка справа от поиска позволяет отображать только те предметы, для крафта которых сейчас хватает ресурсов в инвентаре.
+  * Пустые вкладки при включённом фильтре автоматически скрываются.
 
 * Прокрутка колесом мыши:
   * Колонку вкладок слева можно плавно листать колесом мыши вверх и вниз.
@@ -42,10 +46,11 @@ A client-side mod for Minecraft 1.21.1 (NeoForge) that integrates the vanilla Re
 
 ## Features
 
-* Seamless JEI Integration:
-  * Left-click any item to view recipes (falls back to uses if uncraftable).
-  * Right-click to view uses.
-  * Standard keybinds: R (recipes), U (uses), A (bookmarks).
+* Seamless Crafting & JEI Integration:
+  * Left-click any item to place its recipe into the crafting grid (Shift+click for max stack; shows a ghost recipe if ingredients are missing).
+  * Right-click to choose an alternative recipe if multiple exist.
+  * JEI keybinds when hovering an item: Show Recipes (default `R`), Show Uses (default `U`), Bookmark (default `A`) — respects your JEI keybinding settings.
+  * Craftable-only toggle button next to the search bar to filter for recipes you currently have ingredients for.
   * Default side JEI overlay is hidden to keep the UI clean.
 
 * Mouse Wheel Scrolling:
